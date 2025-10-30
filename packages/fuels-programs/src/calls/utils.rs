@@ -29,17 +29,17 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
-/// Creates a [`ScriptTransactionBuilder`] from contract calls.
-pub(crate) fn transaction_builder_from_contract_calls(
+/// Creates a [`ScriptTransactionBuilder`] from contract calls with customizable [`max_fee_estimation_tolerance`].
+pub(crate) async fn tx_builder_from_ct_calls_with_max_fee_est_tolerance(
     calls: &[ContractCall],
     tx_policies: TxPolicies,
     variable_outputs: VariableOutputPolicy,
-    consensus_parameters: &ConsensusParameters,
-    asset_inputs: Vec<Input>,
     account: &impl Account,
+    max_fee_estimation_tolerance: f32
 ) -> Result<ScriptTransactionBuilder> {
+    let consensus_parameters = account.try_provider()?.consensus_parameters().await?;
     let calls_instructions_len = compute_calls_instructions_len(calls);
-    let data_offset = call_script_data_offset(consensus_parameters, calls_instructions_len)?;
+    let data_offset = call_script_data_offset(&consensus_parameters, calls_instructions_len)?;
 
     let (script_data, call_param_offsets) = build_script_data_from_contract_calls(
         calls,
@@ -48,11 +48,22 @@ pub(crate) fn transaction_builder_from_contract_calls(
     )?;
     let script = get_instructions(call_param_offsets);
 
+    let base_asset_id = *consensus_parameters.base_asset_id();
+    let required_asset_amounts = calculate_required_asset_amounts(calls, base_asset_id);
+
+    let mut asset_inputs = vec![];
+    for &(asset_id, amount) in &required_asset_amounts {
+        let resources = account
+            .get_asset_inputs_for_amount(asset_id, amount, None)
+            .await?;
+        asset_inputs.extend(resources);
+    }
+
     let (inputs, outputs) = get_transaction_inputs_outputs(
         calls,
         asset_inputs,
         account.address(),
-        *consensus_parameters.base_asset_id(),
+        base_asset_id,
     );
 
     Ok(ScriptTransactionBuilder::default()
@@ -63,7 +74,17 @@ pub(crate) fn transaction_builder_from_contract_calls(
         .with_inputs(inputs)
         .with_outputs(outputs)
         .with_gas_estimation_tolerance(DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE)
-        .with_max_fee_estimation_tolerance(DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE))
+        .with_max_fee_estimation_tolerance(max_fee_estimation_tolerance))
+}
+
+/// Creates a [`ScriptTransactionBuilder`] from contract calls.
+pub(crate) async fn transaction_builder_from_contract_calls(
+    calls: &[ContractCall],
+    tx_policies: TxPolicies,
+    variable_outputs: VariableOutputPolicy,
+    account: &impl Account,
+) -> Result<ScriptTransactionBuilder> {
+    tx_builder_from_ct_calls_with_max_fee_est_tolerance(calls, tx_policies, variable_outputs, account, DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE).await
 }
 
 /// Creates a [`ScriptTransaction`] from contract calls. The internal [Transaction] is

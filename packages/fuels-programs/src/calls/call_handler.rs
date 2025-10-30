@@ -28,6 +28,8 @@ use fuels_core::{
 };
 use std::sync::Arc;
 
+use crate::DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE;
+
 // Trait implemented by contract instances so that
 // they can be passed to the `with_contracts` method
 pub trait ContractDependency {
@@ -42,6 +44,7 @@ pub struct CallHandler<A, C, T> {
     pub account: A,
     pub call: C,
     pub tx_policies: TxPolicies,
+    pub max_fee_estimation_tolerance: f32,
     pub log_decoder: LogDecoder,
     pub datatype: PhantomData<T>,
     decoder_config: DecoderConfig,
@@ -60,6 +63,11 @@ impl<A, C, T> CallHandler<A, C, T> {
     /// ```
     pub fn with_tx_policies(mut self, tx_policies: TxPolicies) -> Self {
         self.tx_policies = tx_policies;
+        self
+    }
+
+    pub fn with_max_fee_estimation_tolerance(mut self, max_fee_estimation_tolerance: f32) -> Self {
+        self.max_fee_estimation_tolerance = max_fee_estimation_tolerance;
         self
     }
 
@@ -97,33 +105,10 @@ where
         let consensus_parameters = self.account.try_provider()?.consensus_parameters().await?;
         let required_asset_amounts = self
             .call
-            .required_assets(*consensus_parameters.base_asset_id());
+            .tx_builder_with_max_fee_est_tolerance(self.tx_policies, self.variable_output_policy, &self.account, self.max_fee_estimation_tolerance)
+            .await?;
 
-        // Find the spendable resources required for those calls
-        let mut asset_inputs = vec![];
-        for &(asset_id, amount) in &required_asset_amounts {
-            let resources = self
-                .account
-                .get_asset_inputs_for_amount(asset_id, amount, None)
-                .await?;
-            asset_inputs.extend(resources);
-        }
-
-        self.transaction_builder_with_parameters(&consensus_parameters, asset_inputs)
-    }
-
-    pub fn transaction_builder_with_parameters(
-        &self,
-        consensus_parameters: &ConsensusParameters,
-        asset_inputs: Vec<Input>,
-    ) -> Result<ScriptTransactionBuilder> {
-        let mut tb = self.call.transaction_builder(
-            self.tx_policies,
-            self.variable_output_policy,
-            consensus_parameters,
-            asset_inputs,
-            &self.account,
-        )?;
+        let mut tb = required_asset_amounts;
 
         tb.add_signers(&self.unresolved_signers)?;
 
@@ -311,6 +296,7 @@ where
             account,
             call,
             tx_policies: TxPolicies::default(),
+            max_fee_estimation_tolerance: DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE,
             log_decoder,
             datatype: PhantomData,
             decoder_config: DecoderConfig::default(),
@@ -399,6 +385,7 @@ where
             account,
             call,
             tx_policies: TxPolicies::default(),
+            max_fee_estimation_tolerance: DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE,
             log_decoder,
             datatype: PhantomData,
             decoder_config: DecoderConfig::default(),
@@ -432,6 +419,7 @@ where
             account,
             call: vec![],
             tx_policies: TxPolicies::default(),
+            max_fee_estimation_tolerance: DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE,
             log_decoder: LogDecoder::new(Default::default(), Default::default()),
             datatype: PhantomData,
             decoder_config: DecoderConfig::default(),

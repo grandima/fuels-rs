@@ -1,34 +1,43 @@
-use crate::calls::utils::calculate_required_asset_amounts;
 use crate::{
     DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE,
     calls::{
         ContractCall, ScriptCall,
-        utils::{build_with_tb, sealed, transaction_builder_from_contract_calls},
+        utils::{
+            build_with_tb, calculate_required_asset_amounts, sealed,
+            transaction_builder_from_contract_calls, tx_builder_from_ct_calls_with_max_fee_est_tolerance,
+        },
     },
 };
 use fuel_tx::ConsensusParameters;
 use fuel_types::AssetId;
 use fuels_accounts::Account;
-use fuels_core::types::input::Input;
 use fuels_core::types::{
     errors::{Context, Result, error},
+    input::Input,
     transaction::{ScriptTransaction, TxPolicies},
     transaction_builders::{
         BuildableTransaction, ScriptTransactionBuilder, TransactionBuilder, VariableOutputPolicy,
     },
 };
-
 #[async_trait::async_trait]
 pub trait TransactionTuner: sealed::Sealed {
     fn required_assets(&self, base_asset_id: AssetId) -> Vec<(AssetId, u128)>;
 
-    fn transaction_builder<T: Account>(
+    async fn transaction_builder<T: Account>(
         &self,
         tx_policies: TxPolicies,
         variable_output_policy: VariableOutputPolicy,
         consensus_parameters: &ConsensusParameters,
         asset_input: Vec<Input>,
         account: &T,
+    ) -> Result<ScriptTransactionBuilder>;
+
+    async fn tx_builder_with_max_fee_est_tolerance<T: Account>(
+        &self,
+        tx_policies: TxPolicies,
+        variable_output_policy: VariableOutputPolicy,
+        account: &T,
+        max_fee_estimation_tolerance: f32
     ) -> Result<ScriptTransactionBuilder>;
 
     async fn build_tx<T: Account>(
@@ -44,7 +53,7 @@ impl TransactionTuner for ContractCall {
         calculate_required_asset_amounts(std::slice::from_ref(self), base_asset_id)
     }
 
-    fn transaction_builder<T: Account>(
+    async fn transaction_builder<T: Account>(
         &self,
         tx_policies: TxPolicies,
         variable_output_policy: VariableOutputPolicy,
@@ -56,10 +65,24 @@ impl TransactionTuner for ContractCall {
             std::slice::from_ref(self),
             tx_policies,
             variable_output_policy,
-            consensus_parameters,
-            asset_input,
             account,
-        )
+        ).await
+    }
+    
+    async fn tx_builder_with_max_fee_est_tolerance<T: Account>(
+        &self,
+        tx_policies: TxPolicies,
+        variable_output_policy: VariableOutputPolicy,
+        account: &T,
+        max_fee_estimation_tolerance: f32
+    ) -> Result<ScriptTransactionBuilder> {
+        tx_builder_from_ct_calls_with_max_fee_est_tolerance(
+            std::slice::from_ref(self),
+            tx_policies,
+            variable_output_policy,
+            account,
+            max_fee_estimation_tolerance,
+        ).await
     }
 
     async fn build_tx<T: Account>(
@@ -77,13 +100,13 @@ impl TransactionTuner for ScriptCall {
         vec![]
     }
 
-    fn transaction_builder<T: Account>(
+    async fn transaction_builder<T: Account>(
         &self,
         tx_policies: TxPolicies,
         variable_output_policy: VariableOutputPolicy,
         _: &ConsensusParameters,
         _: Vec<Input>,
-        _account: &T,
+        account: &T,
     ) -> Result<ScriptTransactionBuilder> {
         let (inputs, outputs) = self.prepare_inputs_outputs()?;
 
@@ -96,6 +119,26 @@ impl TransactionTuner for ScriptCall {
             .with_outputs(outputs)
             .with_gas_estimation_tolerance(DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE)
             .with_max_fee_estimation_tolerance(DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE))
+    }
+
+    async fn tx_builder_with_max_fee_est_tolerance<T: Account>(
+        &self,
+        tx_policies: TxPolicies,
+        variable_output_policy: VariableOutputPolicy,
+        _account: &T,
+        max_fee_estimation_tolerance: f32
+    ) -> Result<ScriptTransactionBuilder> {
+        let (inputs, outputs) = self.prepare_inputs_outputs()?;
+
+        Ok(ScriptTransactionBuilder::default()
+            .with_variable_output_policy(variable_output_policy)
+            .with_tx_policies(tx_policies)
+            .with_script(self.script_binary.clone())
+            .with_script_data(self.compute_script_data()?)
+            .with_inputs(inputs)
+            .with_outputs(outputs)
+            .with_gas_estimation_tolerance(DEFAULT_MAX_FEE_ESTIMATION_TOLERANCE)
+            .with_max_fee_estimation_tolerance(max_fee_estimation_tolerance))
     }
 
     async fn build_tx<T: Account>(
@@ -121,7 +164,7 @@ impl TransactionTuner for Vec<ContractCall> {
         calculate_required_asset_amounts(self, base_asset_id)
     }
 
-    fn transaction_builder<T: Account>(
+    async fn transaction_builder<T: Account>(
         &self,
         tx_policies: TxPolicies,
         variable_output_policy: VariableOutputPolicy,
@@ -135,10 +178,20 @@ impl TransactionTuner for Vec<ContractCall> {
             self,
             tx_policies,
             variable_output_policy,
-            consensus_parameters,
-            asset_input,
             account,
-        )
+        ).await
+    }
+    
+    async fn tx_builder_with_max_fee_est_tolerance<T: Account>(
+        &self,
+        tx_policies: TxPolicies,
+        variable_output_policy: VariableOutputPolicy,
+        account: &T,
+        max_fee_estimation_tolerance: f32
+    ) -> Result<ScriptTransactionBuilder> {
+        validate_contract_calls(self)?;
+        tx_builder_from_ct_calls_with_max_fee_est_tolerance(self, tx_policies, variable_output_policy, account, max_fee_estimation_tolerance)
+            .await
     }
 
     /// Returns the script that executes the contract calls
